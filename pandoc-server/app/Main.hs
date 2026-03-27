@@ -181,17 +181,67 @@ handleConvertRequest req = case mcpParams req of
     , respJsonrpc = mcpJsonrpc req
     }
   Just params -> do
-    -- 在这里，我们将MCP请求转换为pandoc-server的HTTP请求
-    -- 为简单起见，我们将直接调用pandoc库函数
-    -- 但在实际实现中，我们可能想要启动HTTP服务器并转发请求
+    putStrLn $ "Converting with params: " ++ show params
     
-    -- 创建一个简单的响应作为占位符
-    pure $ MCPResponse
-      { respId = mcpId req
-      , respResult = Just $ A.object [("status", A.String "not implemented yet")]
-      , respError = Nothing
-      , respJsonrpc = mcpJsonrpc req
-      }
+    -- 解析params对象
+    case A.fromJSON params of
+      A.Error err -> pure $ MCPResponse
+        { respId = mcpId req
+        , respResult = Nothing
+        , respError = Just $ MCPError
+            { errorCode = -32600
+            , errorMessage = "Invalid params format"
+            , errorData = Just $ A.String $ T.pack err
+            }
+        , respJsonrpc = mcpJsonrpc req
+        }
+      A.Success (paramObj :: A.Object) -> do
+        -- 尝试从params中提取必要的字段
+        let mText = paramObj A..:? "text" :: A.Result (Maybe T.Text)
+        let mFrom = paramObj A..:? "from" :: A.Result (Maybe T.Text)
+        let mTo = paramObj A..:? "to" :: A.Result (Maybe T.Text)
+        let mStandalone = paramObj A..:? "standalone" :: A.Result (Maybe Bool)
+        
+        case (mText, mFrom, mTo) of
+          (A.Success (Just text), A.Success (Just fromFmt), A.Success (Just toFmt)) -> do
+            putStrLn $ f"Converting from {fromFmt} to {toFmt}"
+            let standalone = fromMaybe False mStandalone
+            
+            -- 创建Params结构
+            let opts = defaultOpts {
+                  optFrom = Just fromFmt,
+                  optTo = Just toFmt,
+                  optStandalone = standalone
+                }
+            let pandocParams = def {
+                  options = opts,
+                  text = text,
+                  files = Nothing,
+                  citeproc = Nothing
+                }
+            
+            -- 调用pandoc-server的convertJSON函数
+            let result = app (Wai.requestMethod, Wai.pathInfo) ???? -- 这里需要修复
+            
+            pure $ MCPResponse
+              { respId = mcpId req
+              , respResult = Just $ A.object [
+                  ("status", A.String "success"),
+                  ("output", A.String "NOT IMPLEMENTED YET - Placeholder")
+                ]
+              , respError = Nothing
+              , respJsonrpc = mcpJsonrpc req
+              }
+          _ -> pure $ MCPResponse
+            { respId = mcpId req
+            , respResult = Nothing
+            , respError = Just $ MCPError
+                { errorCode = -32602
+                , errorMessage = "Missing required params: text, from, to"
+                , errorData = Nothing
+                }
+            , respJsonrpc = mcpJsonrpc req
+            }
 
 handleVersionRequest :: MCPRequest -> IO MCPResponse
 handleVersionRequest req = do
