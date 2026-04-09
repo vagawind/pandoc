@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pandoc MCP (Model Context Protocol) WebSocket server.
-This server accepts JSON-RPC messages over WebSocket and runs pandoc commands.
+Pandoc MCP (Model Context Protocol) server supporting both HTTP and WebSocket.
+This server accepts JSON-RPC messages over HTTP POST or WebSocket and runs pandoc commands.
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import logging
 from typing import Dict, Any, Optional
 import websockets
 from websockets.server import serve
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -154,7 +155,7 @@ class PandocMCPServer:
             }
 
 
-async def handler(websocket):
+async def websocket_handler(websocket):
     """Handle WebSocket connections."""
     server = PandocMCPServer()
     
@@ -228,11 +229,112 @@ async def handler(websocket):
             await websocket.send(json.dumps(response))
 
 
-async def main():
-    """Start the WebSocket server."""
-    async with serve(handler, "0.0.0.0", 8765):
-        logger.info("Pandoc MCP WebSocket server started on ws://0.0.0.0:8765")
+async def http_handler(request):
+    """Handle HTTP POST requests for MCP."""
+    server = PandocMCPServer()
+    
+    try:
+        # Parse JSON request
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32700,
+                    "message": "Parse error"
+                },
+                "id": None
+            })
+        
+        # Validate JSON-RPC 2.0
+        if data.get("jsonrpc") != "2.0":
+            return web.json_response({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: jsonrpc must be '2.0'"
+                },
+                "id": data.get("id")
+            })
+        
+        method = data.get("method")
+        params = data.get("params", {})
+        request_id = data.get("id")
+        
+        # Process request
+        result = await server.process_request(method, params)
+        
+        # Build response
+        if result.get("status") == "success":
+            response = {
+                "jsonrpc": "2.0",
+                "result": result,
+                "id": request_id
+            }
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": result.get("message", "Internal error")
+                },
+                "id": request_id
+            }
+        
+        return web.json_response(response)
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in HTTP handler: {e}")
+        return web.json_response({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32603,
+                "message": "Internal error"
+            },
+            "id": None
+        })
+
+
+async def start_websocket_server(host="0.0.0.0", port=8765):
+    """Start WebSocket server."""
+    async with serve(websocket_handler, host, port):
+        logger.info(f"Pandoc MCP WebSocket server started on ws://{host}:{port}")
         await asyncio.Future()  # run forever
+
+
+async def start_http_server(host="0.0.0.0", port=8080):
+    """Start HTTP server."""
+    app = web.Application()
+    app.router.add_post('/', http_handler)
+    app.router.add_get('/health', lambda request: web.json_response({"status": "healthy"}))
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
+    
+    logger.info(f"Pandoc MCP HTTP server started on http://{host}:{port}")
+    return runner
+
+
+async def main():
+    """Start both HTTP and WebSocket servers."""
+    # Start HTTP server (default MCP)
+    http_runner = await start_http_server("0.0.0.0", 8080)
+    
+    # Start WebSocket server (for backward compatibility)
+    websocket_task = asyncio.create_task(start_websocket_server("0.0.0.0", 8765))
+    
+    try:
+        # Keep both servers running
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # Cleanup
+        await http_runner.cleanup()
+        websocket_task.cancel()
 
 
 if __name__ == "__main__":

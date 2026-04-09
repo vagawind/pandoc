@@ -15,8 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the MCP server code
 COPY mcp_server.py .
 
-# Expose WebSocket port
-EXPOSE 8765
+# Expose both HTTP and WebSocket ports
+# HTTP MCP (default): 8080, WebSocket MCP: 8765
+EXPOSE 8080 8765
 
-# Run the server
+# Run the server (default uses HTTP MCP on port 8080, WebSocket on 8765)
 CMD ["python", "mcp_server.py"]
